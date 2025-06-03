@@ -1,117 +1,93 @@
-import pandas as pd
+# Импорт необходимых библиотек
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import f1_score, recall_score, precision_score
+import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier
+from sklearn.metrics import accuracy_score, roc_curve, auc, classification_report
+from sklearn.preprocessing import LabelEncoder
+from sklearn.impute import SimpleImputer
 
-# ==============================
-# Этап 1. Загрузка и предварительная обработка данных
-# ==============================
+# 1. Загрузка и предобработка данных (аналогично 1-й лабораторной)
+url = "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"
+data = pd.read_csv(url)
 
-# Читаем датасет (предполагается, что это Titanic, как в задании 2)
-df = pd.read_csv('D:/для работ/MMOlab/titanic_data.csv')
+# Удаление ненужных столбцов
+data = data.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'], axis=1)
 
-# Выводим все столбцы
-pd.options.display.max_columns = None
+# Заполнение пропущенных значений
+imputer = SimpleImputer(strategy='median')
+data['Age'] = imputer.fit_transform(data[['Age']])
+data['Embarked'] = data['Embarked'].fillna(data['Embarked'].mode()[0])
 
-# Заполним пропущенные значения:
-#   - Для числовых столбцов заполняем медианой,
-#   - Для категориальных – модой.
-numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-for col in numeric_cols:
-    df[col] = df[col].fillna(df[col].median())
+# Преобразование категориальных признаков
+label_encoders = {}
+for col in ['Sex', 'Embarked']:
+    le = LabelEncoder()
+    data[col] = le.fit_transform(data[col])
+    label_encoders[col] = le
 
-categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-for col in categorical_cols:
-    df[col] = df[col].fillna(df[col].mode()[0])
+# Разделение на признаки и целевую переменную
+X = data.drop('Survived', axis=1)
+y = data['Survived']
 
-# Масштабируем числовые данные в диапазон [0, 1]
-scaler = MinMaxScaler()
-df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+# Разделение на обучающую и тестовую выборки
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Преобразуем категориальные переменные в dummy-переменные
-df = pd.get_dummies(df, drop_first=True)
+# 2. Случайный лес с оценкой OOB
+rf = RandomForestClassifier(
+    n_estimators=100,
+    oob_score=True,
+    random_state=42,
+    max_features='sqrt'  # m ≈ sqrt(n_features)
+)
+rf.fit(X_train, y_train)
 
-# ==============================
-# Этап 2. Подготовка данных для классификации
-# ==============================
+# OOB-оценка
+oob_error = 1 - rf.oob_score_
+print(f"Random Forest OOB Error: {oob_error:.4f}")
 
-# Для задачи классификации в качестве целевой переменной используем столбец 'Survived'
-if 'Survived' not in df.columns:
-    raise ValueError("В датасете отсутствует столбец 'Survived'")
+# 3. AdaBoost и градиентный бустинг
+# AdaBoost
+ada = AdaBoostClassifier(n_estimators=100, random_state=42)
+ada.fit(X_train, y_train)
 
-# Определяем X (признаки) и y (целевой признак)
-X = df.drop('Survived', axis=1)
-y = df['Survived']
+# Градиентный бустинг
+gb = GradientBoostingClassifier(n_estimators=100, random_state=42)
+gb.fit(X_train, y_train)
 
-# Разбиваем данные на обучающую и тестовую выборки (например, 70% на обучение и 30% на тест)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-# ==============================
-# Этап 3. Модель случайного леса (Random Forest)
-# ==============================
+# 4. Оценка моделей
+def evaluate_model(model, X_test, y_test, name):
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
+    acc = accuracy_score(y_test, y_pred)
+    fpr, tpr, _ = roc_curve(y_test, y_proba)
+    roc_auc = auc(fpr, tpr)
 
-rf_clf = RandomForestClassifier(random_state=42)
-rf_clf.fit(X_train, y_train)
-rf_pred = rf_clf.predict(X_test)
+    print(f"\n{name} Performance:")
+    print(classification_report(y_test, y_pred))
+    print(f"Accuracy: {acc:.4f}, ROC-AUC: {roc_auc:.4f}")
 
-# Рассчитываем метрики для модели случайного леса
-rf_f1 = f1_score(y_test, rf_pred)
-rf_recall = recall_score(y_test, rf_pred)
-rf_precision = precision_score(y_test, rf_pred)
+    return fpr, tpr, roc_auc
 
-print("----- Случайный лес -----")
-print("F1 Score:    {:.3f}".format(rf_f1))
-print("Recall:      {:.3f}".format(rf_recall))
-print("Precision:   {:.3f}".format(rf_precision))
 
-# ==============================
-# Этап 4. Модель градиентного бустинга (Gradient Boosting)
-# ==============================
+# Оценка всех моделей
+plt.figure(figsize=(10, 8))
+for model, name in zip([rf, ada, gb],
+                       ['Random Forest', 'AdaBoost', 'Gradient Boosting']):
+    fpr, tpr, roc_auc = evaluate_model(model, X_test, y_test, name)
+    plt.plot(fpr, tpr, lw=2, label=f'{name} (AUC = {roc_auc:.2f})')
 
-gb_clf = GradientBoostingClassifier(random_state=42)
-gb_clf.fit(X_train, y_train)
-gb_pred = gb_clf.predict(X_test)
-
-# Рассчитываем метрики для модели градиентного бустинга
-gb_f1 = f1_score(y_test, gb_pred)
-gb_recall = recall_score(y_test, gb_pred)
-gb_precision = precision_score(y_test, gb_pred)
-
-print("\n----- Градиентный бустинг -----")
-print("F1 Score:    {:.3f}".format(gb_f1))
-print("Recall:      {:.3f}".format(gb_recall))
-print("Precision:   {:.3f}".format(gb_precision))
-
-# ==============================
-# Этап 5. Визуальное сравнение результатов
-# ==============================
-
-models = ['Random Forest', 'Gradient Boosting']
-f1_scores = [rf_f1, gb_f1]
-recalls = [rf_recall, gb_recall]
-precisions = [rf_precision, gb_precision]
-
-plt.figure(figsize=(14, 4))
-
-# Сравнение F1-score
-plt.subplot(1, 3, 1)
-plt.bar(models, f1_scores, color=['skyblue', 'lightgreen'])
-plt.title('F1 Score')
-plt.ylabel('Score')
-
-# Сравнение Recall
-plt.subplot(1, 3, 2)
-plt.bar(models, recalls, color=['skyblue', 'lightgreen'])
-plt.title('Recall')
-
-# Сравнение Precision
-plt.subplot(1, 3, 3)
-plt.bar(models, precisions, color=['skyblue', 'lightgreen'])
-plt.title('Precision')
-
-plt.suptitle("Сравнение моделей: случайный лес vs. градиентный бустинг", fontsize=16)
-plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+# Визуализация ROC-кривых
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curves Comparison')
+plt.legend(loc="lower right")
+plt.savefig('roc_curves.png')
 plt.show()
+
+
